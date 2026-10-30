@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/icon.svg" width="72" height="72" alt="fileorg icon"></p>
+<p align="center"><img src="app/assets/icons/icon.svg" width="72" height="72" alt="fileorg icon"></p>
 
 <h1 align="center">fileorg</h1>
 
@@ -19,7 +19,7 @@
 folder such as `Images/`, `Videos/`, `Documents/`, `Archives/` or `Code/`, based on its
 extension. Preview everything first, never overwrite a file, and undo any run.
 
-![fileorg desktop app](assets/screenshot.png)
+![fileorg desktop app](app/assets/images/screenshot.png)
 
 ## Download the app
 
@@ -36,32 +36,157 @@ Windows SmartScreen may ask for confirmation the first time.
 
 ## Desktop app
 
-The app is a thin Tkinter front end around the same tested core as the CLI.
+![fileorg in dark mode](app/assets/images/screenshot-dark.png)
 
 - Pick a source folder and an optional destination.
 - Preview a table of every planned move before anything happens.
 - Toggle subfolders, unknown files, hidden files and ignore patterns.
-- One **Organise** button moves the files and writes an undo journal.
-- **Undo last run** restores everything and cleans up empty folders.
+- **Organise** moves the files and writes an undo journal.
+- **Undo** restores everything and cleans up the emptied category folders.
+- Choose a light or dark theme; the app remembers it, along with your last folder and
+  options, in `settings.json`.
+- Long scans, moves and undos run on a worker thread, so the window never freezes.
 
-The app uses the same journal folder as the CLI, so a run started in one can be undone in
+The app and CLI share the same journal folder, so a run started in one can be undone in
 the other.
 
-## Command line
+## Run from source
 
-The original single-file CLI is still there and has no dependencies.
+The desktop app needs Python 3.9+ with Tkinter (included in the official Windows and
+macOS installers, and in the `python3-tk` package on Debian/Ubuntu).
 
 ```bash
 git clone https://github.com/hari1vkp/fileorg.git
 cd fileorg
+python3 main.py                 # launch the desktop app
+python3 main.py ~/Downloads     # open with a folder already selected
+```
 
+No runtime packages to install. Build tooling is listed in `requirements.txt`.
+
+## How a run works
+
+```
+main.py → app.application
+  └─ builds the root window, theme manager, services and controller
+       │
+       ▼
+   Dashboard  ──►  controller.preview()
+       │              └─ service.preview() on a worker thread
+       │                   └─ core.planner.build_moves()  (no disk writes)
+       ▼
+   Preview table  ◄──  controller marshals the plan back with after()
+       │
+       ▼
+   Organise  ──►  confirmation dialog
+       │
+       ├─ service.organise() → core.fileops.apply_moves()
+       │     mkdir category folders · shutil.move · never overwrite
+       │     journal every successful move
+       ▼
+   Journal in the platform state folder
+       │
+       ▼
+   Undo  ──►  service.undo() → put files back → prune empty folders
+```
+
+The Tk main loop only ever renders. Worker threads hand results to a queue that is
+drained by `after()` on the main thread, so widgets are touched from one thread only.
+
+## Architecture
+
+```
+.
+├── main.py                     # desktop entry point
+├── fileorg.py                  # CLI entry point (thin wrapper over app.cli)
+├── requirements.txt            # build/dev tooling only
+│
+├── app/
+│   ├── application.py          # composition root
+│   ├── config.py               # platform paths, bundled asset resolution
+│   ├── cli.py                  # argparse CLI built on the service
+│   │
+│   ├── core/                   # pure domain code, no Tk imports
+│   │   ├── constants.py        # categories, version, design tokens
+│   │   ├── exceptions.py       # user-facing domain errors
+│   │   ├── events.py           # small event bus
+│   │   ├── planner.py          # scan + plan moves
+│   │   ├── fileops.py          # move, undo, prune
+│   │   └── journal.py          # journal read/write
+│   │
+│   ├── models/                 # data only
+│   │   ├── organise.py         # Move, options, plan, result
+│   │   ├── settings.py         # persisted preferences
+│   │   └── forms.py            # dashboard form state
+│   │
+│   ├── services/               # application operations
+│   │   ├── organise_service.py # preview / organise / undo
+│   │   └── settings_service.py # load / save settings
+│   │
+│   ├── controllers/
+│   │   └── main_controller.py  # state, validation, threading
+│   │
+│   ├── ui/
+│   │   ├── windows/main_window.py
+│   │   ├── layouts/            # sidebar + shell
+│   │   ├── views/              # dashboard, settings
+│   │   ├── components/         # buttons, inputs, cards, dialogs, nav
+│   │   └── themes/             # palettes, type scale, ttk styles, manager
+│   │
+│   ├── utils/                  # helpers and task runners
+│   └── assets/                 # icons, screenshots, fonts
+│
+├── tests/                      # core, service, model and controller tests
+└── scripts/make_icons.py       # regenerate committed icons
+```
+
+| Layer | Responsibility | May import |
+| --- | --- | --- |
+| `core` | Planning, moving, journalling | stdlib, models |
+| `models` | Data structures | stdlib |
+| `services` | Validate inputs, coordinate core | core, models, config |
+| `controllers` | UI state and background work | services, models, theme manager, utils |
+| `ui` | Widgets, layout, rendering | models, components, themes |
+| `application` | Wiring only | everything |
+
+UI never scans or moves files directly; controllers never import `tkinter` widgets.
+
+## Theme system
+
+`app/ui/themes/` is the single source of visual truth:
+
+- `colors.py` holds two complete semantic palettes (`light`, `dark`).
+- `typography.py` detects an installed UI font and exposes one type scale.
+- `styles.py` builds every ttk style from the active palette.
+- `theme_manager.py` owns the active theme and repaints registered widgets.
+
+Screens refer to roles (`surface`, `border`, `muted`, `danger`) rather than hex values.
+Components register themselves, so switching themes updates labels, cards, the table and
+its category colours immediately. Window geometry, spacing tokens (`SPACE`) and corner
+radii (`RADII`) live in `core/constants.py`.
+
+## Safety notes
+
+- `fileorg` **moves** files; it does not copy them. `shutil.move` handles cross-device moves.
+- Preview never changes anything.
+- Existing files are never overwritten — a numbered suffix is added instead.
+- Hidden files and symlinks are skipped by default.
+- Already-organised category folders are not walked again in recursive mode.
+- Every organise run writes a journal, and Undo restores the files and removes the
+  category folders it emptied.
+
+## Command line
+
+The CLI is still a single entry point with the same options and no dependencies.
+
+```bash
 python3 fileorg.py            # preview what would happen in ~/Downloads
 python3 fileorg.py --apply    # move the files
 ```
 
 ```console
 $ python3 fileorg.py
-fileorg 1.1.0 - /home/you/Downloads (dry run)
+fileorg 1.2.0 - /home/you/Downloads (dry run)
 
   Archives/    1 file
   Audio/       1 file
@@ -84,7 +209,7 @@ Would move 10 files. Re-run with --apply to do it.
 | `-d, --dest DIR` | Put the category folders somewhere else (another drive, for example). |
 | `-n, --apply` | Actually move files. Without this, `fileorg` only prints a plan. |
 | `-r, --recursive` | Also organise files inside subfolders. |
-| `-u, --move-unknown` | Move files with unknown extensions into `Other/` instead of leaving them. |
+| `-u, --move-unknown` | Move unknown extensions into `Other/` instead of leaving them. |
 | `--include-hidden` | Include dotfiles and hidden folders. |
 | `--ignore PATTERN` | Skip names matching a glob. Repeatable. |
 | `--undo` | Reverse the most recent run (preview unless combined with `--apply`). |
@@ -127,10 +252,10 @@ python3 fileorg.py ~/Downloads --apply --move-unknown
 | `3D/` | obj, fbx, stl, glb, gltf, blend |
 
 Anything else stays where it is, unless you pass `--move-unknown`, in which case it goes
-to `Other/`. The full mapping lives at the top of [`fileorg.py`](fileorg.py) and is easy
-to edit.
+to `Other/`. The full mapping lives in [`app/core/constants.py`](app/core/constants.py)
+and is easy to edit.
 
-## Undo
+## Undo and journals
 
 Each organise run writes a journal to:
 
@@ -147,59 +272,50 @@ python3 fileorg.py --undo --apply   # restore the files
 
 Undo moves the files back, removes the category folders it emptied, and marks the
 journal as `.undone` so the next `--undo` targets the run before it. The desktop app's
-**Undo last run** button does the same thing.
+**Undo** button does the same thing.
 
-## Safety notes
+Settings are stored separately:
 
-- `fileorg` **moves** files; it does not copy them. `shutil.move` handles cross-device moves.
-- The preview/dry run never changes anything.
-- Hidden files and symlinks are skipped by default.
-- Existing files are never overwritten — a numbered suffix is added instead.
-- Already-organised category folders are not walked again in `--recursive` mode, so files
-  don't get shuffled into `Images/Images/`.
-- If a run is interrupted, files moved so far are still journalled and can be undone.
+| Platform | Settings location |
+| --- | --- |
+| Linux | `~/.config/fileorg/settings.json` (or `$XDG_CONFIG_HOME/fileorg/`) |
+| Windows | `%APPDATA%\fileorg\settings.json` |
+| macOS | `~/Library/Application Support/fileorg/settings.json` |
 
 ## Tech stack
 
 | Layer | Choice | Why |
 | --- | --- | --- |
-| Language | Python 3.9+ | Same code for Windows and Linux, no runtime install for users. |
-| Core | Python standard library (`pathlib`, `shutil`, `json`, `argparse`) | Zero dependencies, easy to audit. |
-| Desktop UI | Tkinter + `ttk` | Ships with Python; keeps the app small and portable. |
-| Packaging | PyInstaller 6 (one-file, windowed) | Single executable per platform; bundles Python and Tk. |
-| Builds | GitHub Actions on `ubuntu-22.04` and `windows-latest` | Reproducible native builds; Linux binary is built against an older glibc. |
+| Language | Python 3.9+ | Same code on both operating systems. |
+| Core | Standard library (`pathlib`, `shutil`, `json`, `argparse`) | Zero runtime dependencies, easy to audit. |
+| Desktop UI | Tkinter + `ttk`, custom themed components | Ships with Python; small, portable binaries. |
+| Architecture | Core → services → controllers → views | Business logic stays out of widgets. |
+| Theming | Semantic palettes + ttk style factory | One design system, light and dark, no scattered hex codes. |
+| Concurrency | `threading` + queue drained by `after()` | Slow disks never block the event loop. |
+| Packaging | PyInstaller 6, one-file, windowed | Single executable per platform, no installer. |
+| Builds | GitHub Actions on `ubuntu-22.04` and `windows-latest` | Native, reproducible builds; older glibc for Linux reach. |
 | Icons | Pillow (development only) | Generates the committed PNG/ICO assets. |
-| Tests | `unittest` | No test dependencies; 14 core tests plus a manual GUI flow test. |
-
-How the pieces fit:
-
-| File | Role |
-| --- | --- |
-| [`fileorg.py`](fileorg.py) | Core planner, mover, journal and CLI. |
-| [`fileorg_gui.py`](fileorg_gui.py) | Desktop app built on the core. |
-| [`fileorg.spec`](fileorg.spec) | PyInstaller recipe. |
-| [`scripts/make_icons.py`](scripts/make_icons.py) | Regenerates `assets/icon.png` and `icon.ico`. |
-| [`tests/test_fileorg.py`](tests/test_fileorg.py) | Core test suite. |
-| [`.github/workflows/build-app.yml`](.github/workflows/build-app.yml) | Windows and Linux builds. |
+| Tests | `unittest` | 47 tests across core, CLI, services, models and the controller. |
 
 ## Development
 
-Run the core tests:
+Run the test suite:
 
 ```bash
 python3 -m unittest discover -s tests -v
 ```
 
-Run the app from source:
+Check imports and byte-compile everything:
 
 ```bash
-python3 fileorg_gui.py
+python3 -m compileall -q app main.py fileorg.py
+ruff check app main.py fileorg.py tests scripts --select E9,F63,F7,F82,F401,F811,F841
 ```
 
 Build a local executable:
 
 ```bash
-python3 -m pip install pyinstaller pillow
+python3 -m pip install -r requirements.txt
 python3 -m PyInstaller --noconfirm --clean fileorg.spec
 ./dist/fileorg
 ```
@@ -210,9 +326,10 @@ Regenerate icons after changing the design:
 python3 scripts/make_icons.py
 ```
 
-The test suite covers dry runs, category placement, collisions, hidden files, symlinks,
-recursive runs, custom destinations, ignores and undo. CI runs it on Linux, macOS and
-Windows with Python 3.9 and 3.13.
+The core tests cover dry runs, category placement, collisions, hidden files, symlinks,
+recursive runs, custom destinations, ignores and undo. Service, model and controller
+tests cover validation, journal compatibility, settings persistence, threading
+boundaries and state changes.
 
 ## License
 

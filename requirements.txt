@@ -1,0 +1,8 @@
+# fileorg has no runtime dependencies beyond the Python standard library
+# (including tkinter, which ships with official Python builds).
+#
+# The packages below are only needed to build the desktop executables and to
+# regenerate the committed icon assets.
+
+pyinstaller>=6.0,<7
+pillow>=10.0

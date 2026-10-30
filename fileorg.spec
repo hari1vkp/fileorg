@@ -3,14 +3,14 @@
 
 import sys
 
-icon = "assets/icon.ico" if sys.platform == "win32" else None
+icon = "app/assets/icons/icon.ico" if sys.platform == "win32" else None
 version = "version_info.txt" if sys.platform == "win32" else None
 
 a = Analysis(
-    ["fileorg_gui.py"],
+    ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[("assets/icon.png", "assets")],
+    datas=[("app/assets/icons/icon.png", "app/assets/icons")],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
